@@ -1,0 +1,27 @@
+How to Use:
+
+    Create a Test Scene: Make a new scene in your Unity project (e.g., MatchEngineTestScene).
+
+    Create a GameObject: Add an empty GameObject to the scene (e.g., name it _Tester).
+
+    Attach Script: Add the MatchEngineTester.cs script to the _Tester GameObject.
+
+    Configure (Optional): Select the _Tester GameObject. In the Inspector, you'll see fields for "Home Team", "Away Team", "Home Tactic", and "Away Tactic".
+
+        You can leave these empty to use the default teams/tactics generated in the Awake method.
+
+        Or, you can expand them and modify player attributes, team names, tactic settings, etc., directly in the Inspector before running simulations. This is powerful for testing specific scenarios (e.g., "What if the home GK has 90 Reflexes?").
+
+    Run Simulation:
+
+        Enter Play Mode in Unity.
+
+        Select the _Tester GameObject again.
+
+        Right-click on the "Match Engine Tester (Script)" component header in the Inspector.
+
+        Choose "Run Single Match Simulation" or "Run Batch Simulation".
+
+    Check Console: Observe the output in the Unity Console window (Window -> General -> Console). You'll see the start/end logs and the MatchResult details. For batch simulations, you'll get aggregate statistics.
+
+Now you can easily tweak the probabilities and logic within MatchEngine.cs, re-compile, enter Play Mode, and run tests using the Inspector context menu to see how your changes affect the simulation outcomes, allowing for much faster iteration and balancing.
