@@ -1,0 +1,180 @@
+#region Core Dependencies
+using HandballManager.Data;
+using HandballManager.Gameplay;
+using HandballManager.Core;
+using HandballManager.Core.Logging;
+using HandballManager.Core.Time;
+#endregion
+
+#region Simulation Dependencies
+using HandballManager.Simulation;
+using HandballManager.Simulation.Factories;
+using HandballManager.Simulation.Interfaces;
+using HandballManager.Simulation.Services;
+using HandballManager.Simulation.Engines;
+using HandballManager.Simulation.AI;
+using HandballManager.Simulation.Physics;
+using HandballManager.Simulation.Core;
+using HandballManager.Simulation.Core.MatchData;
+using HandballManager.Simulation.Core.Interfaces;
+using HandballManager.Simulation.Core.Exceptions;
+#endregion
+
+#region System Dependencies
+using System;
+using System.Linq;
+using System.Threading;
+using System.Collections.Generic;
+using UnityEngine;
+#endregion
+
+namespace HandballManager.Simulation.Engines
+{
+    /// <summary>
+    /// Implementation of the match engine that orchestrates the simulation of a handball match.
+    /// </summary>
+    public class MatchEngine : IMatchEngine
+    {
+        private const int DefaultMinPlayersRequired = 7;
+        private readonly ILogger _logger;
+        private readonly IGameTimeProvider _timeProvider;
+        
+        // Factory for creating MatchSimulator instances
+        private readonly IMatchSimulatorFactory _simulatorFactory;
+        
+        // Service bundles that aggregate related dependencies
+        private readonly ISimulationServiceBundle _simulationServices;
+        private readonly IEngineServiceBundle _engineServices;
+        private readonly IAIServiceBundle _aiServices;
+
+        /// <summary>
+        /// Initializes a new instance of the MatchEngine with all required dependencies.
+        /// </summary>
+        public MatchEngine(
+            // Core dependencies
+            ILogger logger, 
+            IGameTimeProvider timeProvider,
+            
+            // Factory for creating MatchSimulator instances
+            IMatchSimulatorFactory simulatorFactory,
+            
+            // Service bundles
+            ISimulationServiceBundle simulationServices,
+            IEngineServiceBundle engineServices,
+            IAIServiceBundle aiServices)
+        {
+            // Core dependencies
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+            
+            // Factory for creating MatchSimulator instances
+            _simulatorFactory = simulatorFactory ?? throw new ArgumentNullException(nameof(simulatorFactory));
+            
+            // Service bundles
+            _simulationServices = simulationServices ?? throw new ArgumentNullException(nameof(simulationServices));
+            _engineServices = engineServices ?? throw new ArgumentNullException(nameof(engineServices));
+            _aiServices = aiServices ?? throw new ArgumentNullException(nameof(aiServices));
+            
+            _logger.LogInformation("MatchEngine initialized with all dependencies.");
+        }
+
+        /// <summary>
+        /// Simulates a complete handball match between two teams using the injected dependencies.
+        /// </summary>
+        /// <param name="homeTeam">The home team data.</param>
+        /// <param name="awayTeam">The away team data.</param>
+        /// <param name="homeTactic">The tactic for the home team.</param>
+        /// <param name="awayTactic">The tactic for the away team.</param>
+        /// <param name="seed">Optional random seed for deterministic simulation (-1 for time-based).</param>
+        /// <param name="progress">Optional progress reporter.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>The match result containing score and statistics.</returns>
+        public MatchResult SimulateMatch(TeamData homeTeam, TeamData awayTeam, Tactic homeTactic, Tactic awayTactic,
+                                         int seed = -1, IProgress<float> progress = null, CancellationToken cancellationToken = default)
+        {
+            string homeTeamName = homeTeam?.Name ?? "NULL_HOME_TEAM";
+            string awayTeamName = awayTeam?.Name ?? "NULL_AWAY_TEAM";
+            _logger.LogInformation($"Starting match simulation setup: {homeTeamName} vs {awayTeamName} (Seed: {seed})");
+
+            try
+            {
+                // --- Input Validation ---
+                if (homeTeam == null || awayTeam == null)
+                    throw new ValidationException("Home or Away TeamData is null.");
+                
+                string rosterValidationError = ValidateTeamRoster(homeTeam, "Home");
+                if (rosterValidationError != null)
+                    throw new ValidationException(rosterValidationError);
+                
+                rosterValidationError = ValidateTeamRoster(awayTeam, "Away");
+                if (rosterValidationError != null)
+                    throw new ValidationException(rosterValidationError);
+
+                // --- Tactic Handling ---
+                if (homeTactic == null) { _logger.LogWarning($"Home tactic null for {homeTeamName}. Using default."); homeTactic = Tactic.Default; }
+                if (awayTactic == null) { _logger.LogWarning($"Away tactic null for {awayTeamName}. Using default."); awayTactic = Tactic.Default; }
+
+                // Check for cancellation before potentially lengthy setup
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // --- Create MatchState ---
+                var matchState = new MatchState(homeTeam, awayTeam, homeTactic, awayTactic, seed);
+
+                // --- Create MatchSimulator instance using the factory ---
+                var matchSimulator = _simulatorFactory.Create(
+                    matchState,
+                    progress,
+                    cancellationToken
+                );
+
+                if (matchSimulator == null)
+                    throw new SetupException("MatchSimulator factory returned null.");
+
+                _logger.LogInformation($"Starting simulation core: {homeTeamName} vs {awayTeamName}");
+
+                // Run the simulation with current date
+                DateTime matchDate = _timeProvider.CurrentDate;
+                var result = matchSimulator.SimulateMatch(matchDate);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (result != null) { 
+                    _logger.LogInformation($"Simulation finished: {result.HomeTeamName} {result.HomeScore} - {result.AwayScore} {result.AwayTeamName}"); 
+                    return result;
+                }
+                else { 
+                    throw new RuntimeException($"Simulation completed but returned a null result for {homeTeamName} vs {awayTeamName}."); 
+                }
+            }
+            catch (OperationCanceledException) { 
+                _logger.LogInformation($"Simulation cancelled for {homeTeamName} vs {awayTeamName}");
+                throw new SimulationException("Simulation was cancelled", SimulationErrorType.Cancelled);
+            }
+            catch (ValidationException) {
+                // Just rethrow validation exceptions as they're already properly typed
+                throw;
+            }
+            catch (SimulationException) {
+                // Just rethrow simulation exceptions as they're already properly typed
+                throw;
+            }
+            catch (InvalidOperationException opEx) { 
+                _logger.LogError($"Simulation setup error ({homeTeamName} vs {awayTeamName}): {opEx.Message}", opEx);
+                throw new SetupException($"Simulation Setup Exception: {opEx.Message}", opEx);
+            }
+            catch (Exception ex) { 
+                _logger.LogError($"Simulation error ({homeTeamName} vs {awayTeamName}): {ex.Message}", ex);
+                throw new RuntimeException($"Simulation Exception: {ex.Message}", ex);
+            }
+        }
+
+        // Keep ValidateTeamRoster as it's part of MatchEngine's responsibility.
+        private string ValidateTeamRoster(TeamData team, string teamIdentifier) { 
+            if (team == null) return $"{teamIdentifier} team is null";
+            if (team.Players == null) return $"{teamIdentifier} team has no players";
+            if (team.Players.Count < DefaultMinPlayersRequired) 
+                return $"{teamIdentifier} team has insufficient players ({team.Players.Count}/{DefaultMinPlayersRequired})";
+            return null; 
+        }
+    }
+}
